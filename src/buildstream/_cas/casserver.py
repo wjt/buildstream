@@ -29,6 +29,7 @@ import grpc
 from google.protobuf.message import DecodeError
 import click
 
+from .. import _signals
 from .._protos.build.bazel.remote.execution.v2 import (
     remote_execution_pb2,
     remote_execution_pb2_grpc,
@@ -149,7 +150,11 @@ def create_server(repo, *, enable_push, quota, index_only, log_level=LogLevel.Le
             _BuildStreamCapabilitiesServicer(artifact_capabilities, source_capabilities), server
         )
 
-        yield server
+        # Ensure we have the signal handler set for SIGTERM
+        # This allows threads from GRPC to call our methods that do register
+        # handlers at exit.
+        with _signals.terminator(lambda: None):
+            yield server
 
     finally:
         casd_channel.close()

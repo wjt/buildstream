@@ -80,12 +80,9 @@ def terminator_handler(signal_, frame):
 def terminator(terminate_func):
     global terminator_stack  # pylint: disable=global-statement
 
-    # Signal handling only works in the main thread
-    if threading.current_thread() != threading.main_thread():
-        yield
-        return
-
     outermost = bool(not terminator_stack)
+
+    assert threading.current_thread() == threading.main_thread() or not outermost
 
     terminator_stack.append(terminate_func)
     if outermost:
@@ -96,7 +93,7 @@ def terminator(terminate_func):
     finally:
         if outermost:
             signal.signal(signal.SIGTERM, original_handler)
-        terminator_stack.pop()
+        terminator_stack.remove(terminate_func)
 
 
 # Just a simple object for holding on to two callbacks
@@ -146,6 +143,8 @@ def suspendable(suspend_callback, resume_callback):
     global suspendable_stack  # pylint: disable=global-statement
 
     outermost = bool(not suspendable_stack)
+    assert threading.current_thread() == threading.main_thread() or not outermost
+
     suspender = Suspender(suspend_callback, resume_callback)
     suspendable_stack.append(suspender)
 
@@ -158,7 +157,7 @@ def suspendable(suspend_callback, resume_callback):
         if outermost:
             signal.signal(signal.SIGTSTP, original_stop)
 
-        suspendable_stack.pop()
+        suspendable_stack.remove(suspender)
 
 
 # blocked()
