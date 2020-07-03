@@ -33,6 +33,13 @@ from typing import Callable, Deque
 terminator_stack: Deque[Callable] = deque()
 suspendable_stack: Deque[Callable] = deque()
 
+IS_NOT_SUSPENDED = threading.Event()
+IS_NOT_SUSPENDED.set()
+
+
+class TerminateException(BaseException):
+    pass
+
 
 # Per process SIGTERM handler
 def terminator_handler(signal_, frame):
@@ -90,6 +97,9 @@ def terminator(terminate_func):
 
     try:
         yield
+    except TerminateException:
+        terminate_func()
+        raise
     finally:
         if outermost:
             signal.signal(signal.SIGTERM, original_handler)
@@ -105,6 +115,7 @@ class Suspender:
 
 # Per process SIGTSTP handler
 def suspend_handler(sig, frame):
+    IS_NOT_SUSPENDED.clear()
 
     # Suspend callbacks from innermost frame first
     for suspender in reversed(suspendable_stack):
@@ -120,6 +131,8 @@ def suspend_handler(sig, frame):
     # Resume callbacks from outermost frame inwards
     for suspender in suspendable_stack:
         suspender.resume()
+
+    IS_NOT_SUSPENDED.set()
 
 
 # suspendable()
@@ -150,6 +163,13 @@ def suspendable(suspend_callback, resume_callback):
 
     if outermost:
         original_stop = signal.signal(signal.SIGTSTP, suspend_handler)
+
+    # If we are not in the main thread, ensure that we are not suspended
+    # before running.
+    # If we are in the main thread, never block on this, to ensure we
+    # don't deadlock.
+    if threading.current_thread() != threading.main_thread():
+        IS_NOT_SUSPENDED.wait()
 
     try:
         yield

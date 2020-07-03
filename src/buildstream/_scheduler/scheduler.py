@@ -20,12 +20,14 @@
 #        Jürg Billeter <juerg.billeter@codethink.co.uk>
 
 # System imports
+import functools
 import os
 import asyncio
 from itertools import chain
 import signal
 import datetime
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # Local imports
 from .resources import Resources
@@ -34,9 +36,7 @@ from ..types import FastEnum
 from .._profile import Topics, PROFILER
 from .._message import Message, MessageType
 from ..plugin import Plugin
-
-
-_MAX_TIMEOUT_TO_KILL_CHILDREN = 20  # in seconds
+from .. import _signals
 
 
 # A decent return code for Scheduler.run()
@@ -44,6 +44,23 @@ class SchedStatus(FastEnum):
     SUCCESS = 0
     ERROR = -1
     TERMINATED = 1
+
+
+def reset_signals_on_exit(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        orig_sigint = signal.getsignal(signal.SIGINT)
+        orig_sigterm = signal.getsignal(signal.SIGTERM)
+        orig_sigtstp = signal.getsignal(signal.SIGTSTP)
+
+        try:
+            return func(*args, **kwargs)
+        finally:
+            signal.signal(signal.SIGINT, orig_sigint)
+            signal.signal(signal.SIGTERM, orig_sigterm)
+            signal.signal(signal.SIGTSTP, orig_sigtstp)
+
+    return wrapper
 
 
 # Scheduler()
@@ -79,7 +96,6 @@ class Scheduler:
 
         # These are shared with the Job, but should probably be removed or made private in some way.
         self.loop = None  # Shared for Job access to observe the message queue
-        self.internal_stops = 0  # Amount of SIGSTP signals we've introduced, this is shared with job.py
 
         #
         # Private members
@@ -113,6 +129,7 @@ class Scheduler:
     # elements have been processed by each queue or when
     # an error arises
     #
+    @reset_signals_on_exit
     def run(self, queues, casd_process_manager):
 
         # Hold on to the queues to process
@@ -149,10 +166,14 @@ class Scheduler:
 
         # Start the profiler
         with PROFILER.profile(Topics.SCHEDULER, "_".join(queue.action_name for queue in self.queues)):
-            # Run the queues
-            self._sched()
-            self.loop.run_forever()
-            self.loop.close()
+            # FIXME: this should be done in a cleaner way
+            with _signals.suspendable(lambda: None, lambda: None), _signals.terminator(lambda: None):
+                with ThreadPoolExecutor(max_workers=sum(self.resources._max_resources.values())) as pool:
+                    self.loop.set_default_executor(pool)
+                    # Run the queues
+                    self._sched()
+                    self.loop.run_forever()
+                    self.loop.close()
 
         # Stop watching casd
         _watcher.remove_child_handler(self._casd_process.pid)
@@ -348,13 +369,6 @@ class Scheduler:
             # If that happens, do another round.
             process_queues = any(q.dequeue_ready() for q in self.queues)
 
-        # Make sure fork is allowed before starting jobs
-        if not self.context.prepare_fork():
-            message = Message(MessageType.BUG, "Fork is not allowed", detail="Background threads are active")
-            self.context.messenger.message(message)
-            self.terminate()
-            return
-
         # Start the jobs
         #
         for job in ready:
@@ -412,9 +426,10 @@ class Scheduler:
         if not self.suspended:
             self._suspendtime = datetime.datetime.now()
             self.suspended = True
-            # Notify that we're suspended
-            for job in self._active_jobs:
-                job.suspend()
+            _signals.IS_NOT_SUSPENDED.clear()
+
+            for suspender in reversed(_signals.suspendable_stack):
+                suspender.suspend()
 
     # _resume_jobs()
     #
@@ -422,8 +437,10 @@ class Scheduler:
     #
     def _resume_jobs(self):
         if self.suspended:
-            for job in self._active_jobs:
-                job.resume()
+            for suspender in _signals.suspendable_stack:
+                suspender.resume()
+
+            _signals.IS_NOT_SUSPENDED.set()
             self.suspended = False
             # Notify that we're unsuspended
             self._state.offset_start_time(datetime.datetime.now() - self._suspendtime)
@@ -455,12 +472,6 @@ class Scheduler:
     # A loop registered event callback for SIGTSTP
     #
     def _suspend_event(self):
-
-        # Ignore the feedback signals from Job.suspend()
-        if self.internal_stops:
-            self.internal_stops -= 1
-            return
-
         # No need to care if jobs were suspended or not, we _only_ handle this
         # while we know jobs are not suspended.
         self._suspend_jobs()
@@ -482,13 +493,6 @@ class Scheduler:
         self.loop.remove_signal_handler(signal.SIGTERM)
 
     def _terminate_jobs_real(self):
-        def kill_jobs():
-            for job_ in self._active_jobs:
-                job_.kill()
-
-        # Schedule all jobs to be killed if they have not exited after timeout
-        self.loop.call_later(_MAX_TIMEOUT_TO_KILL_CHILDREN, kill_jobs)
-
         for job in self._active_jobs:
             job.terminate()
 
