@@ -71,7 +71,6 @@ class _MessageType(FastEnum):
     ERROR = 2
     RESULT = 3
     CHILD_DATA = 4
-    SUBCLASS_CUSTOM_MESSAGE = 5
 
 
 # Job()
@@ -273,22 +272,6 @@ class Job:
     #                  Abstract Methods                   #
     #######################################################
 
-    # handle_message()
-    #
-    # Handle a custom message. This will be called in the main process in
-    # response to any messages sent to the main process using the
-    # Job.send_message() API from inside a Job.child_process() implementation.
-    #
-    # There is no need to implement this function if no custom messages are
-    # expected.
-    #
-    # Args:
-    #    message (any): A simple object (must be pickle-able, i.e. strings,
-    #                   lists, dicts, numbers, but not Element instances).
-    #
-    def handle_message(self, message):
-        raise ImplError("Job '{kind}' does not implement handle_message()".format(kind=type(self).__name__))
-
     # parent_complete()
     #
     # This will be executed in the main process after the job finishes, and is
@@ -423,8 +406,6 @@ class Job:
         elif envelope.message_type is _MessageType.CHILD_DATA:
             # If we retry a job, we assign a new value to this
             self.child_data = envelope.message
-        elif envelope.message_type is _MessageType.SUBCLASS_CUSTOM_MESSAGE:
-            self.handle_message(envelope.message)
         else:
             assert False, "Unhandled message type '{}': {}".format(envelope.message_type, envelope.message)
 
@@ -535,25 +516,6 @@ class ChildJob:
         self._messenger.message(
             Message(message_type, message, element_name=element_name, element_key=element_key, **kwargs)
         )
-
-    # send_message()
-    #
-    # Send data in a message to the parent Job, running in the main process.
-    #
-    # This allows for custom inter-process communication between subclasses of
-    # Job and ChildJob.
-    #
-    # These messages will be processed by the Job.handle_message()
-    # implementation, which may be overridden to support one or more custom
-    # 'message_type's.
-    #
-    # Args:
-    #    message_data (any): A simple object (must be pickle-able, i.e.
-    #                        strings, lists, dicts, numbers, but not Element
-    #                        instances). This is sent to the parent Job.
-    #
-    def send_message(self, message_data):
-        self._send_message(_MessageType.SUBCLASS_CUSTOM_MESSAGE, message_data)
 
     #######################################################
     #                  Abstract Methods                   #
