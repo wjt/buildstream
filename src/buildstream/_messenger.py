@@ -1,5 +1,5 @@
 #
-#  Copyright (C) 2019 Bloomberg Finance LP
+#  Copyright (C) 2019-2020 Bloomberg Finance LP
 #
 #  This program is free software; you can redistribute it and/or
 #  modify it under the terms of the GNU Lesser General Public
@@ -21,10 +21,12 @@ import os
 import datetime
 import threading
 from contextlib import contextmanager
+from typing import Callable, Generator, Optional
 
 from . import _signals
 from ._exceptions import BstError
 from ._message import Message, MessageType
+from ._state import State, _Task
 
 
 _RENDER_INTERVAL = datetime.timedelta(seconds=1)
@@ -42,16 +44,21 @@ if "BST_TEST_SUITE" in os.environ:
 class _TimeData:
     __slots__ = ["start_time"]
 
-    def __init__(self, start_time):
+    def __init__(self, start_time: datetime.datetime) -> None:
         self.start_time = start_time
 
 
+class MessageHandlerCallback:
+    def __call__(self, message: Message, is_silenced: bool) -> None:
+        pass
+
+
 class Messenger:
-    def __init__(self):
-        self._state = None
-        self._next_render = None  # A Time object
-        self._active_simple_tasks = 0
-        self._render_status_cb = None
+    def __init__(self) -> None:
+        self._state: Optional[State] = None
+        self._next_render: Optional[datetime.datetime] = None  # A Time object
+        self._active_simple_tasks: int = 0
+        self._render_status_cb: Optional[Callable[[], None]] = None
 
         self._locals = threading.local()
         self._locals.message_handler = None
@@ -64,14 +71,10 @@ class Messenger:
     # Sets the handler for any status messages propagated through
     # the context.
     #
-    # The handler should have the signature:
+    # Args:
+    #   handler: The handler to call on message
     #
-    #   def handler(
-    #      message: _message.Message,  # The message to send.
-    #      is_silenced: bool,          # Whether messages are currently being silenced.
-    #   ) -> None
-    #
-    def set_message_handler(self, handler):
+    def set_message_handler(self, handler: MessageHandlerCallback) -> None:
         self._locals.message_handler = handler
 
     # set_state()
@@ -79,9 +82,9 @@ class Messenger:
     # Sets the State object within the Messenger
     #
     # Args:
-    #    state (State): The state to set
+    #    state: The state to set
     #
-    def set_state(self, state):
+    def set_state(self, state: State) -> None:
         self._state = state
 
     # set_render_status_cb()
@@ -89,20 +92,16 @@ class Messenger:
     # Sets the callback to use to render status
     #
     # Args:
-    #    callback (function): The Callback to be notified
+    #    callback: The Callback to be notified
     #
-    # Callback Args:
-    #    There are no arguments to the callback
-    #
-    def set_render_status_cb(self, callback):
+    def set_render_status_cb(self, callback: Callable[[], None]) -> None:
         self._render_status_cb = callback
 
     # _silent_messages():
     #
-    # Returns:
-    #    (bool): Whether messages are currently being silenced
+    # Returns: Whether messages are currently being silenced
     #
-    def _silent_messages(self):
+    def _silent_messages(self) -> bool:
         return self._locals.silence_scope_depth > 0
 
     # message():
@@ -113,7 +112,7 @@ class Messenger:
     # Args:
     #    message: A Message object
     #
-    def message(self, message):
+    def message(self, message: Message) -> None:
         # If we are recording messages, dump a copy into the open log file.
         self._record_message(message)
 
@@ -132,12 +131,11 @@ class Messenger:
     # _message.unconditional_messages will be silenced.
     #
     # Args:
-    #    actually_silence (bool): Whether to actually do the silencing, if
-    #                             False then this context manager does not
-    #                             affect anything.
+    #    actually_silence: Whether to actually do the silencing, if False then
+    #                      this context manager does not affect anything.
     #
     @contextmanager
-    def silence(self, *, actually_silence=True):
+    def silence(self, *, actually_silence: bool = True) -> Generator[None, None, None]:
         if not actually_silence:
             yield
             return
@@ -154,13 +152,20 @@ class Messenger:
     # Context manager for performing timed activities and logging those
     #
     # Args:
-    #    activity_name (str): The name of the activity
-    #    element_name (str): Optionally, the element full name of the plugin related to the message
-    #    detail (str): An optional detailed message, can be multiline output
-    #    silent_nested (bool): If True, all but _message.unconditional_messages are silenced
+    #    activity_name: The name of the activity
+    #    element_name: Optionally, the element full name of the plugin related to the message
+    #    detail: An optional detailed message, can be multiline output
+    #    silent_nested: If True, all but _message.unconditional_messages are silenced
     #
     @contextmanager
-    def timed_activity(self, activity_name, *, element_name=None, detail=None, silent_nested=False):
+    def timed_activity(
+        self,
+        activity_name: str,
+        *,
+        element_name: Optional[str] = None,
+        detail: Optional[str] = None,
+        silent_nested: bool = False
+    ) -> Generator[None, None, None]:
         with self.timed_suspendable() as timedata:
             try:
                 # Push activity depth for status messages
@@ -186,20 +191,26 @@ class Messenger:
     # Context manager for creating a task to report progress to.
     #
     # Args:
-    #    activity_name (str): The name of the activity
-    #    element_name (str): Optionally, the element full name of the plugin related to the message
-    #    full_name (str): Optionally, the distinguishing name of the activity, e.g. element name
-    #    silent_nested (bool): If True, all but _message.unconditional_messages are silenced
+    #    activity_name: The name of the activity
+    #    element_name: Optionally, the element full name of the plugin related to the message
+    #    full_name: Optionally, the distinguishing name of the activity, e.g. element name
+    #    silent_nested: If True, all but _message.unconditional_messages are silenced
     #
-    # Yields:
-    #    Task: A Task object that represents this activity, principally used to report progress
+    # Yields: A Task object that represents this activity, principally used to report progress
     #
     @contextmanager
-    def simple_task(self, activity_name, *, element_name=None, full_name=None, silent_nested=False):
+    def simple_task(
+        self,
+        activity_name: str,
+        *,
+        element_name: Optional[str] = None,
+        full_name: Optional[str] = None,
+        silent_nested: bool = False
+    ) -> Generator[Optional[_Task], None, None]:
         # Bypass use of State when none exists (e.g. tests)
         if not self._state:
             with self.timed_activity(activity_name, element_name=element_name, silent_nested=silent_nested):
-                yield
+                yield None
             return
 
         if not full_name:
@@ -255,17 +266,15 @@ class Messenger:
     # Messenger.get_log_filename() API.
     #
     # Args:
-    #     filename (str): A logging directory relative filename,
-    #                     the pid and .log extension will be automatically
-    #                     appended
+    #     filename: A logging directory relative filename, the pid and .log
+    #               extension will be automatically appended
     #
-    #     logdir (str)  : The path to the log file directory.
+    #     logdir : The path to the log file directory.
     #
-    # Yields:
-    #     (str): The fully qualified log filename
+    # Yields: The fully qualified log filename
     #
     @contextmanager
-    def recorded_messages(self, filename, logdir):
+    def recorded_messages(self, filename: str, logdir: str) -> Generator[str, None, None]:
         # We dont allow recursing in this context manager, and
         # we also do not allow it in the main process.
         assert not hasattr(self._locals, "log_handle") or self._locals.log_handle is None
@@ -308,10 +317,9 @@ class Messenger:
     # log file handle when the Messenger.recorded_messages() context
     # manager is active
     #
-    # Returns:
-    #     (file): The active logging file handle, or None
+    # Returns: The active logging file handle, or None
     #
-    def get_log_handle(self):
+    def get_log_handle(self) -> Optional[str]:
         return self._locals.log_handle
 
     # get_log_filename()
@@ -320,10 +328,9 @@ class Messenger:
     # log filename when the Messenger.recorded_messages() context
     # manager is active
     #
-    # Returns:
-    #     (str): The active logging filename, or None
+    # Returns: The active logging filename, or None
     #
-    def get_log_filename(self):
+    def get_log_filename(self) -> str:
         return self._locals.log_filename
 
     # timed_suspendable()
@@ -332,10 +339,10 @@ class Messenger:
     # adjust for clock drift caused by suspending
     #
     # Yields:
-    #    TimeData: An object that contains the time the activity started
+    #    An object that contains the time the activity started
     #
     @contextmanager
-    def timed_suspendable(self):
+    def timed_suspendable(self) -> Generator[_TimeData, None, None]:
         # Note: timedata needs to be in a namedtuple so that values can be
         # yielded that will change
         timedata = _TimeData(start_time=datetime.datetime.now())
@@ -361,7 +368,7 @@ class Messenger:
     # Args:
     #    message (Message): The message to record
     #
-    def _record_message(self, message):
+    def _record_message(self, message: Message) -> None:
 
         if self._locals.log_handle is None:
             return
@@ -408,7 +415,7 @@ class Messenger:
     # Calls the render status callback set in the messenger, but only if a
     # second has passed since it last rendered.
     #
-    def _render_status(self):
+    def _render_status(self) -> None:
         assert self._next_render
 
         # self._render_status_cb()
