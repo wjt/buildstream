@@ -74,7 +74,7 @@ def dummy_context(*, config=None):
 
         context.load(config=config)
 
-        context.messenger.set_message_handler(_dummy_message_handler)
+        context.messenger.set_root_message_handler(_dummy_message_handler)
         context.messenger.simple_task = MethodType(_get_dummy_task, context.messenger)
 
         yield context

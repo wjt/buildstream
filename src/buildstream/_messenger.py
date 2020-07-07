@@ -210,6 +210,8 @@ class Messenger:
         self._active_simple_tasks: int = 0
         self._render_status_cb: Optional[Callable[[], None]] = None
 
+        self._root_message_handler: Optional[_MessageHandler] = None
+
         self._locals = threading.local()
         self._locals.message_handler = None
 
@@ -223,6 +225,18 @@ class Messenger:
     #
     def set_message_handler(self, handler: MessageHandlerCallback) -> None:
         self._locals.message_handler = _MessageHandler(handler)
+
+    # set_root_message_handler()
+    #
+    # Sets the handler for any status messages propagated through
+    # the context.
+    #
+    # Args:
+    #   handler: The handler to call on message
+    #
+    def set_root_message_handler(self, handler: MessageHandlerCallback) -> None:
+        self._root_message_handler = _MessageHandler(handler)
+        self._locals.message_handler = self._root_message_handler
 
     # set_state()
     #
@@ -251,9 +265,14 @@ class Messenger:
     #
     # Args:
     #    message: A Message object
+    #    use_root_handler: Whether to use the root handler or the thread local one
     #
-    def message(self, message: Message) -> None:
-        self._message_handler.message(message)
+    def message(self, message: Message, use_root_handler: bool = False) -> None:
+        if use_root_handler:
+            assert self._root_message_handler is not None
+            self._root_message_handler.message(message)
+        else:
+            self._message_handler.message(message)
 
     # silence()
     #

@@ -67,7 +67,6 @@ class _Envelope:
 
 
 class _MessageType(FastEnum):
-    LOG_MESSAGE = 1
     ERROR = 2
     RESULT = 3
 
@@ -389,10 +388,6 @@ class Job:
         if not self._listening:
             return
 
-        if envelope.message_type is _MessageType.LOG_MESSAGE:
-            # Propagate received messages from children
-            # back through the context.
-            self._messenger.message(envelope.message)
         elif envelope.message_type is _MessageType.ERROR:
             # For regression tests only, save the last error domain / reason
             # reported from a child task in the main process, this global state
@@ -691,4 +686,4 @@ class ChildJob:
         if message.message_type == MessageType.LOG:
             return
 
-        self._send_message(_MessageType.LOG_MESSAGE, message)
+        self._messenger.message(message, use_root_handler=True)

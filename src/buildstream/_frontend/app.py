@@ -240,7 +240,7 @@ class App:
             )
 
             # Propagate pipeline feedback to the user
-            self.context.messenger.set_message_handler(self._message_handler)
+            self.context.messenger.set_root_message_handler(self._message_handler)
 
             # Check if throttling frontend updates to tick rate
             self._cache_messages = self.context.log_throttle_updates
