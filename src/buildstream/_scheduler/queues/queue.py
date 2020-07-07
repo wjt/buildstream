@@ -268,16 +268,16 @@ class Queue:
     #    job (Job): The job which completed
     #
     def _update_workspaces(self, element, job):
-        workspace_dict = None
-        if job.child_data:
-            workspace_dict = job.child_data.get("workspace", None)
+        # FIXME: This should be done only for build jobs and not by proding
+        #        the element, but as an explicit return value from the job
+        workspace = element._get_workspace()
 
         # Handle any workspace modifications now
         #
-        if workspace_dict:
+        if workspace:
             context = element._get_context()
             workspaces = context.get_workspaces()
-            if workspaces.update_workspace(element._get_full_name(), workspace_dict):
+            if workspaces.update_workspace(element._get_full_name(), workspace.to_dict()):
                 try:
                     workspaces.save_config()
                 except BstError as e:
