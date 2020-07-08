@@ -29,7 +29,7 @@ import traceback
 
 # BuildStream toplevel imports
 from ..._exceptions import ImplError, BstError, set_last_task_error, SkipJob
-from ..._message import Message, MessageType, unconditional_messages
+from ..._message import Message, MessageType
 from ...types import FastEnum
 from ._job import abort_thread
 from ..._signals import TerminateException
@@ -69,8 +69,7 @@ class _Envelope:
 
 
 class _MessageType(FastEnum):
-    LOG_MESSAGE = 1
-    RESULT = 2
+    RESULT = 1
 
 
 # Job()
@@ -373,11 +372,7 @@ class Job:
         if not self._listening:
             return
 
-        if envelope.message_type is _MessageType.LOG_MESSAGE:
-            # Propagate received messages from children
-            # back through the context.
-            self._messenger.message(envelope.message)
-        elif envelope.message_type is _MessageType.RESULT:
+        if envelope.message_type is _MessageType.RESULT:
             assert self._result is None
             self._result = envelope.message
         else:
@@ -525,15 +520,14 @@ class ChildJob:
         # Set the global message handler in this child
         # process to forward messages to the parent process
         self._pipe_w = pipe_w
-        self._messenger.set_message_handler(self._child_message_handler)
 
         # Time, log and and run the action function
         #
-        with self._messenger.timed_suspendable() as timeinfo, self._messenger.recorded_messages(
-            self._logfile, self._logdir
+        with self._messenger.timed_suspendable() as timeinfo, self._messenger.record_job(
+            self.action_name, self._message_element_key, self._logfile, self._logdir
         ) as filename:
             try:
-                self.message(MessageType.START, self.action_name, logfile=filename)
+                self.message(MessageType.START, self.action_name)
 
                 with self._terminate_lock:
                     self._thread_id = threading.current_thread().ident
@@ -558,7 +552,6 @@ class ChildJob:
                             MessageType.FAIL,
                             "Try #{} failed, retrying".format(self._tries),
                             elapsed=elapsed,
-                            logfile=filename,
                         )
                     else:
                         self.message(
@@ -566,7 +559,6 @@ class ChildJob:
                             str(e),
                             elapsed=elapsed,
                             detail=e.detail,
-                            logfile=filename,
                             sandbox=e.sandbox,
                         )
 
@@ -585,7 +577,7 @@ class ChildJob:
                     elapsed = datetime.datetime.now() - timeinfo.start_time
                     detail = "An unhandled exception occured:\n\n{}".format(traceback.format_exc())
 
-                    self.message(MessageType.BUG, self.action_name, elapsed=elapsed, detail=detail, logfile=filename)
+                    self.message(MessageType.BUG, self.action_name, elapsed=elapsed, detail=detail)
                     # Unhandled exceptions should permenantly fail
                     return _ReturnCode.PERM_FAIL
 
@@ -594,7 +586,7 @@ class ChildJob:
                     self._child_send_result(result)
 
                     elapsed = datetime.datetime.now() - timeinfo.start_time
-                    self.message(MessageType.SUCCESS, self.action_name, elapsed=elapsed, logfile=filename)
+                    self.message(MessageType.SUCCESS, self.action_name, elapsed=elapsed)
 
                     # Shutdown needs to stay outside of the above context manager,
                     # make sure we dont try to handle SIGTERM while the process
@@ -640,38 +632,6 @@ class ChildJob:
     def _child_send_result(self, result):
         if result is not None:
             self._send_message(_MessageType.RESULT, result)
-
-    # _child_message_handler()
-    #
-    # A Context delegate for handling messages, this replaces the
-    # frontend's main message handler in the context of a child task
-    # and performs local logging to the local log file before sending
-    # the message back to the parent process for further propagation.
-    # The related element display key is added to the message for
-    # widget rendering if not already set for an element childjob.
-    #
-    # Args:
-    #    message     (Message): The message to log
-    #    is_silenced (bool)   : Whether messages are silenced
-    #
-    def _child_message_handler(self, message, is_silenced):
-
-        message.action_name = self.action_name
-
-        # If no key has been set at this point, and the element job has
-        # a related key, set it. This is needed for messages going
-        # straight to the message handler from the child process.
-        if message.element_key is None and self._message_element_key:
-            message.element_key = self._message_element_key
-
-        # Send to frontend if appropriate
-        if is_silenced and (message.message_type not in unconditional_messages):
-            return
-
-        if message.message_type == MessageType.LOG:
-            return
-
-        self._send_message(_MessageType.LOG_MESSAGE, message)
 
     def terminate(self):
         if self._should_terminate:

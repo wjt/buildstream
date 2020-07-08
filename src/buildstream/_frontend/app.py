@@ -34,7 +34,7 @@ from .._context import Context
 from .._project import Project
 from .._exceptions import BstError, StreamError, LoadError, AppError
 from ..exceptions import LoadErrorReason
-from .._message import Message, MessageType, unconditional_messages
+from .._message import Message, MessageType
 from .._stream import Stream
 from ..types import _SchedulerErrorAction
 from .. import node
@@ -791,7 +791,7 @@ class App:
     #
     # Handle messages from the pipeline
     #
-    def _message_handler(self, message, is_silenced):
+    def _message_handler(self, message):
 
         # Drop status messages from the UI if not verbose, we'll still see
         # info messages and status messages will still go to the log files.
@@ -801,10 +801,6 @@ class App:
         # Hold on to the failure messages
         if message.message_type in [MessageType.FAIL, MessageType.BUG] and message.element_name is not None:
             self._fail_messages[message.element_name] = message
-
-        # Send to frontend if appropriate
-        if is_silenced and (message.message_type not in unconditional_messages):
-            return
 
         # Format the message & cache it
         text = self.logger.render(message)
