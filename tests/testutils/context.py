@@ -23,7 +23,7 @@ from buildstream._context import Context
 
 
 # Handle messages from the pipeline
-def _dummy_message_handler(message, is_silenced):
+def _dummy_message_handler(message):
     pass
 
 
