@@ -67,7 +67,6 @@ class _Envelope:
 
 
 class _MessageType(FastEnum):
-    ERROR = 2
     RESULT = 3
 
 
@@ -387,12 +386,6 @@ class Job:
     def _parent_process_envelope(self, envelope):
         if not self._listening:
             return
-
-        elif envelope.message_type is _MessageType.ERROR:
-            # For regression tests only, save the last error domain / reason
-            # reported from a child task in the main process, this global state
-            # is currently managed in _exceptions.py
-            set_last_task_error(envelope.message["domain"], envelope.message["reason"])
         elif envelope.message_type is _MessageType.RESULT:
             assert self._result is None
             self._result = envelope.message
@@ -572,8 +565,8 @@ class ChildJob:
                         MessageType.FAIL, str(e), elapsed=elapsed, detail=e.detail, logfile=filename, sandbox=e.sandbox
                     )
 
-                # Report the exception to the parent (for internal testing purposes)
-                self._child_send_error(e)
+                # Register the error for internal testing purposes
+                set_last_task_error(e.domain, e.reason)
 
                 # Set return code based on whether or not the error was temporary.
                 #
@@ -622,23 +615,6 @@ class ChildJob:
     #
     def _send_message(self, message_type, message_data):
         self._pipe_w.send(_Envelope(message_type, message_data))
-
-    # _child_send_error()
-    #
-    # Sends an error to the main process through the message pipe
-    #
-    # Args:
-    #    e (Exception): The error to send
-    #
-    def _child_send_error(self, e):
-        domain = None
-        reason = None
-
-        if isinstance(e, BstError):
-            domain = e.domain
-            reason = e.reason
-
-        self._send_message(_MessageType.ERROR, {"domain": domain, "reason": reason})
 
     # _child_send_result()
     #
