@@ -110,11 +110,12 @@ Class Reference
 """
 
 import itertools
+import multiprocessing
 import os
 import subprocess
 import sys
 from contextlib import contextmanager
-from typing import Generator, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Generator, Optional, Tuple, TypeVar, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from . import utils
@@ -129,6 +130,14 @@ if TYPE_CHECKING:
     from ._project import Project
 
     # pylint: enable=cyclic-import
+
+
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+
+
+def _background_job_wrapper(queue: multiprocessing.Queue, target: Callable[[T1], T2], args: T1) -> None:
+    queue.put(target(*args))
 
 
 class Plugin:
@@ -211,6 +220,8 @@ class Plugin:
     # Note that Plugins can only be instantiated in the main process before
     # scheduling tasks.
     __TABLE = WeakValueDictionary()  # type: WeakValueDictionary[int, Plugin]
+
+    __multiprocessing_context = multiprocessing.get_context("spawn")
 
     def __init__(
         self,
@@ -502,6 +513,21 @@ class Plugin:
             activity_name, element_name=self._get_full_name(), detail=detail, silent_nested=silent_nested
         ):
             yield
+
+    def blocking_activity(self, target: Callable[[T1], T2], args: T1, activity_name: str, *, detail: Optional[str] = None, silent_nested: bool = False) -> T2:
+        with self.__context.messenger.timed_activity(
+            activity_name, element_name=self._get_full_name(), detail=detail, silent_nested=silent_nested
+        ):
+            queue = self.__multiprocessing_context.Queue()
+
+            proc = self.__multiprocessing_context.Process(target=_background_job_wrapper, args=(queue, target, args))
+            proc.start()
+
+            result = queue.get()
+            proc.join()
+
+            return result
+
 
     def call(self, *popenargs, fail: Optional[str] = None, fail_temporarily: bool = False, **kwargs) -> int:
         """A wrapper for subprocess.call()
