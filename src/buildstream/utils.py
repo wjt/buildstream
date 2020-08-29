@@ -1295,7 +1295,12 @@ def _tempnamedfile_name(dir):  # pylint: disable=redefined-builtin
 #    pid (int): Process ID
 #
 def _kill_process_tree(pid):
-    proc = psutil.Process(pid)
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        # Process already died, we're good
+        return
+
     children = proc.children(recursive=True)
 
     def kill_proc(p):
@@ -1352,7 +1357,12 @@ def _call(*popenargs, terminate=False, **kwargs):
             # Some callers know that their subprocess can be
             # gracefully terminated, make an attempt first
             if terminate:
-                proc = psutil.Process(process.pid)
+                try:
+                    proc = psutil.Process(process.pid)
+                except psutil.NoSuchProcess:
+                    # Nothing to do, the process already terminated
+                    return
+
                 proc.terminate()
 
                 try:
