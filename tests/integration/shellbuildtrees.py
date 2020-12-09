@@ -19,9 +19,12 @@ pytestmark = pytest.mark.integration
 DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "project")
 
 
+#
+# Ensure that we didn't get a build tree if we didn't ask for one
+#
 @pytest.mark.datafiles(DATA_DIR)
 @pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_staged(cli_integration, datafiles):
+def test_buildtree_unused(cli_integration, datafiles):
     # We can only test the non interacitve case
     # The non interactive case defaults to not using buildtrees
     # for `bst shell --build`
@@ -35,9 +38,12 @@ def test_buildtree_staged(cli_integration, datafiles):
     res.assert_shell_error()
 
 
+#
+# Ensure we can use a buildtree from a successful build
+#
 @pytest.mark.datafiles(DATA_DIR)
 @pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_staged_forced_true(cli_integration, datafiles):
+def test_buildtree_from_success(cli_integration, datafiles):
     # Test that if we ask for a build tree it is there.
     project = str(datafiles)
     element_name = "build-shell/buildtree.bst"
@@ -52,27 +58,9 @@ def test_buildtree_staged_forced_true(cli_integration, datafiles):
     assert "Hi" in res.output
 
 
-@pytest.mark.datafiles(DATA_DIR)
-@pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_staged_warn_empty_cached(cli_integration, tmpdir, datafiles):
-    # Test that if we stage a cached and empty buildtree, we warn the user.
-    project = str(datafiles)
-    element_name = "build-shell/buildtree.bst"
-
-    # Switch to a temp artifact cache dir to ensure the artifact is rebuilt,
-    # without caching a buildtree which is the default bst behaviour
-    cli_integration.configure({"cachedir": str(tmpdir)})
-
-    res = cli_integration.run(project=project, args=["build", element_name])
-    res.assert_success()
-
-    res = cli_integration.run(
-        project=project, args=["shell", "--build", "--use-buildtree", element_name, "--", "cat", "test"]
-    )
-    res.assert_main_error(ErrorDomain.APP, None)
-    assert "Error launching shell: Artifact was created without buildtree" in res.stderr
-
-
+#
+# Ensure we can use a buildtree from a failed build
+#
 @pytest.mark.datafiles(DATA_DIR)
 @pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
 def test_buildtree_from_failure(cli_integration, datafiles):
@@ -92,198 +80,151 @@ def test_buildtree_from_failure(cli_integration, datafiles):
     assert "Hi" in res.output
 
 
+#
+# Test behavior of launching a shell and requesting to use a buildtree, with
+# various states of local cache (ranging from nothing cached to everything cached)
+#
 @pytest.mark.datafiles(DATA_DIR)
 @pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_from_failure_option_never(cli_integration, tmpdir, datafiles):
-
-    project = str(datafiles)
-    element_name = "build-shell/buildtree-fail.bst"
-
-    # Switch to a temp artifact cache dir to ensure the artifact is rebuilt,
-    # without caching a buildtree explicitly
-    cli_integration.configure({"cachedir": str(tmpdir)})
-
-    res = cli_integration.run(project=project, args=["--cache-buildtrees", "never", "build", element_name])
-    res.assert_main_error(ErrorDomain.STREAM, None)
-
-    res = cli_integration.run(
-        project=project, args=["shell", "--build", element_name, "--use-buildtree", "--", "cat", "test"]
-    )
-    res.assert_main_error(ErrorDomain.APP, None)
-    assert "Error launching shell: Artifact was created without buildtree" in res.stderr
-
-
-@pytest.mark.datafiles(DATA_DIR)
-@pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_from_failure_option_always(cli_integration, tmpdir, datafiles):
-
-    project = str(datafiles)
-    element_name = "build-shell/buildtree-fail.bst"
-
-    # build with  --cache-buildtrees set to 'always', behaviour should match
-    # default behaviour (which is always) as the buildtree will explicitly have been
-    # cached with content.
-    cli_integration.configure({"cachedir": str(tmpdir)})
-
-    res = cli_integration.run(project=project, args=["--cache-buildtrees", "always", "build", element_name])
-    res.assert_main_error(ErrorDomain.STREAM, None)
-
-    res = cli_integration.run(
-        project=project, args=["shell", "--build", element_name, "--use-buildtree", "--", "cat", "test"]
-    )
-    res.assert_success()
-    assert "WARNING using a buildtree from a failed build" in res.stderr
-    assert "Hi" in res.output
-
-
-# Check that build shells work when pulled from a remote cache
-# This is to roughly simulate remote execution
-@pytest.mark.datafiles(DATA_DIR)
-@pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_pulled(cli, tmpdir, datafiles):
+@pytest.mark.parametrize(
+    "pull,pull_deps,pull_buildtree,cache_buildtree",
+    [
+        # Don't pull at all
+        (False, "build", False, False),
+        # Pull only dependencies
+        (True, "build", False, True),
+        # Pull all elements including the shell element, but without the buildtree
+        (True, "all", False, True),
+        # Pull all elements including the shell element, and pull buildtrees
+        (True, "all", True, True),
+        # Pull all elements including the shell element, and pull buildtrees, but buildtree was never cached
+        (True, "all", True, False),
+    ],
+    ids=["no-pull", "pull-only-deps", "pull-without-buildtree", "pull-with-buildtree", "created-without-buildtree"],
+)
+def test_shell_use_pulled_buildtree(cli, tmpdir, datafiles, pull, pull_deps, pull_buildtree, cache_buildtree):
     project = str(datafiles)
     element_name = "build-shell/buildtree.bst"
 
     with create_artifact_share(os.path.join(str(tmpdir), "artifactshare")) as share:
         # Build the element to push it to cache
         cli.configure({"artifacts": {"url": share.repo, "push": True}})
-        result = cli.run(project=project, args=["--cache-buildtrees", "always", "build", element_name])
-        result.assert_success()
-        assert cli.get_element_state(project, element_name) == "cached"
 
-        # Discard the cache
-        shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "cas")))
-        shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "artifacts")))
-        assert cli.get_element_state(project, element_name) != "cached"
-
-        # Pull from cache, ensuring cli options is set to pull the buildtree
-        result = cli.run(
-            project=project, args=["--pull-buildtrees", "artifact", "pull", "--deps", "all", element_name]
-        )
+        # Build it, optionally caching the build tree
+        args = []
+        if cache_buildtree:
+            args += ["--cache-buildtrees", "always"]
+        args += ["--on-error", "continue", "build", element_name]
+        result = cli.run(project=project, args=args)
         result.assert_success()
 
-        # Check it's using the cached build tree
-        res = cli.run(project=project, args=["shell", "--build", element_name, "--use-buildtree", "--", "cat", "test"])
-        res.assert_success()
-
-
-# This test checks for correct behaviour if a buildtree is not present in the local cache.
-@pytest.mark.datafiles(DATA_DIR)
-@pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_buildtree_options(cli, tmpdir, datafiles):
-    project = str(datafiles)
-    element_name = "build-shell/buildtree.bst"
-
-    with create_artifact_share(os.path.join(str(tmpdir), "artifactshare")) as share:
-        # Build the element to push it to cache
-        cli.configure({"artifacts": {"url": share.repo, "push": True}})
-        result = cli.run(project=project, args=["--cache-buildtrees", "always", "build", element_name])
-        result.assert_success()
         assert cli.get_element_state(project, element_name) == "cached"
         assert share.get_artifact(cli.get_artifact_name(project, "test", element_name))
 
-        # Discard the cache
+        # Discard the local cache
         shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "cas")))
         shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "artifacts")))
         assert cli.get_element_state(project, element_name) != "cached"
 
-        # Pull from cache, but do not include buildtrees.
-        result = cli.run(project=project, args=["artifact", "pull", "--deps", "all", element_name])
-        result.assert_success()
+        # Optionally pull the buildtree along with `bst artifact pull`
+        if pull:
+            args = []
+            if pull_buildtree:
+                args += ["--pull-buildtrees"]
+            args += ["artifact", "pull", "--deps", pull_deps, element_name]
 
-        # Check it's not using the cached build tree
-        res = cli.run(project=project, args=["shell", "--build", element_name, "--", "cat", "test"])
-        res.assert_shell_error()
-        assert "Hi" not in res.output
+            # Pull from cache
+            result = cli.run(project=project, args=args)
+            result.assert_success()
 
-        # Check it's not using the cached build tree, default is to ask, and fall back to not
-        # for non interactive behavior
-        res = cli.run(project=project, args=["shell", "--build", element_name, "--", "cat", "test"])
-        res.assert_shell_error()
-        assert "Hi" not in res.output
-
-        # Check correctly handling the lack of buildtree, with '--use-buildtree' attempting and succeeding
-        # to pull the buildtree as the user context allow the pulling of buildtrees and it is
-        # available in the remote and --pull given
-        res = cli.run(
-            project=project,
-            args=[
-                "--pull-buildtrees",
-                "shell",
-                "--build",
-                element_name,
-                "--pull",
-                "--use-buildtree",
-                "--",
-                "cat",
-                "test",
-            ],
+        # Run the shell without asking it to pull any buildtree, just asking to use a buildtree
+        result = cli.run(
+            project=project, args=["shell", "--build", element_name, "--use-buildtree", "--", "cat", "test"]
         )
-        assert "Hi" in res.output
-        shutil.rmtree(os.path.join(os.path.join(str(tmpdir), "cache", "cas")))
-        shutil.rmtree(os.path.join(os.path.join(str(tmpdir), "cache", "artifacts")))
-        assert cli.get_element_state(project, element_name) != "cached"
 
-        # Check it's not loading the shell at all with `--use-buildtree`, when the
-        # user context does not allow for buildtree pulling and --pull is not given
-        result = cli.run(project=project, args=["artifact", "pull", "--deps", "all", element_name])
-        result.assert_success()
-        res = cli.run(project=project, args=["shell", "--build", element_name, "--use-buildtree", "--", "cat", "test"])
-        res.assert_main_error(ErrorDomain.APP, None)
-        assert "Buildtree is not cached locally" in res.stderr
-        assert "Hi" not in res.output
+        # If we did pull the buildtree, expect success, otherwise fail
+        if pull:
+            if pull_deps == "all":
+                if pull_buildtree:
 
-        # Check that when user context is set to pull buildtrees and a remote has the buildtree,
-        # '--use-buildtree' will attempt and succeed at pulling the missing buildtree with --pull set.
-        res = cli.run(
-            project=project,
-            args=[
-                "--pull-buildtrees",
-                "shell",
-                "--build",
-                element_name,
-                "--pull",
-                "--use-buildtree",
-                "--",
-                "cat",
-                "test",
-            ],
-        )
-        assert "Hi" in res.output
-        assert res.get_pulled_elements() == [element_name]
+                    if cache_buildtree:
+                        result.assert_success()
+                        assert "Hi" in result.output
+                    else:
+                        # Sorry, a buildtree was never cached for this element
+                        result.assert_main_error(
+                            ErrorDomain.APP, "missing-buildtree-artifact-created-without-buildtree"
+                        )
+                else:
+                    # We just didn't pull the buildtree
+                    result.assert_main_error(ErrorDomain.APP, "missing-buildtree-artifact-buildtree-not-cached")
+            else:
+                # The artifact we're shelling into is missing
+                result.assert_main_error(ErrorDomain.APP, "missing-buildtree-artifact-not-cached")
+        else:
+            # The dependencies are missing, cannot stage anything even
+            result.assert_main_error(ErrorDomain.APP, "shell-missing-deps")
 
 
-# Tests running pull and pull-buildtree options at the same time.
+#
+# Test behavior of launching a shell and requesting to use and pull a buildtree, with
+# various states of local cache (ranging from nothing cached to everything cached)
+#
 @pytest.mark.datafiles(DATA_DIR)
 @pytest.mark.skipif(not HAVE_SANDBOX, reason="Only available with a functioning sandbox")
-def test_pull_buildtree_pulled(cli, tmpdir, datafiles):
+@pytest.mark.parametrize(
+    "pull,pull_deps,pull_buildtree,cache_buildtree",
+    [
+        # Don't pull at all
+        (False, "build", False, True),
+        # Pull only dependencies
+        (True, "build", False, True),
+        # Pull all elements including the shell element, but without the buildtree
+        (True, "all", False, True),
+        # Pull all elements including the shell element, and pull buildtrees
+        (True, "all", True, True),
+        # Pull all elements including the shell element, and pull buildtrees, but buildtree was never cached
+        (True, "all", True, False),
+    ],
+    ids=["no-pull", "pull-only-deps", "pull-without-buildtree", "pull-with-buildtree", "created-without-buildtree"],
+)
+def test_shell_pull_buildtree(cli, tmpdir, datafiles, pull, pull_deps, pull_buildtree, cache_buildtree):
     project = str(datafiles)
     element_name = "build-shell/buildtree.bst"
 
     with create_artifact_share(os.path.join(str(tmpdir), "artifactshare")) as share:
         # Build the element to push it to cache
         cli.configure({"artifacts": {"url": share.repo, "push": True}})
-        result = cli.run(project=project, args=["--cache-buildtrees", "always", "build", element_name])
-        result.assert_success()
-        assert cli.get_element_state(project, element_name) == "cached"
 
-        # Discard the cache
+        # Build it, optionally caching the build tree
+        args = []
+        if cache_buildtree:
+            args += ["--cache-buildtrees", "always"]
+        args += ["build", element_name]
+        result = cli.run(project=project, args=args)
+        result.assert_success()
+
+        assert cli.get_element_state(project, element_name) == "cached"
+        assert share.get_artifact(cli.get_artifact_name(project, "test", element_name))
+
+        # Discard the local cache
         shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "cas")))
         shutil.rmtree(str(os.path.join(str(tmpdir), "cache", "artifacts")))
         assert cli.get_element_state(project, element_name) != "cached"
 
-        # Check it's not using the cached build tree, because --pull
-        # and pull-buildtrees were not both set
-        res = cli.run(
-            project=project,
-            args=["shell", "--build", element_name, "--pull", "--use-buildtree", "--", "cat", "test",],
-        )
-        res.assert_main_error(ErrorDomain.APP, None)
-        assert "Buildtree is not cached locally" in res.stderr
+        # Optionally pull the buildtree along with `bst artifact pull`
+        if pull:
+            args = []
+            if pull_buildtree:
+                args += ["--pull-buildtrees"]
+            args += ["artifact", "pull", "--deps", pull_deps, element_name]
 
-        # Check it's using the cached build tree, because --pull
-        # and pull-buildtrees were both set
-        res = cli.run(
+            # Pull from cache
+            result = cli.run(project=project, args=args)
+            result.assert_success()
+
+        # Run the shell without asking it to pull any buildtree, just asking to use a buildtree
+        result = cli.run(
             project=project,
             args=[
                 "--pull-buildtrees",
@@ -297,5 +238,10 @@ def test_pull_buildtree_pulled(cli, tmpdir, datafiles):
                 "test",
             ],
         )
-        result.assert_success()
-        assert "Hi" in res.output
+
+        if cache_buildtree:
+            result.assert_success()
+            assert "Hi" in result.output
+        else:
+            # Sorry, a buildtree was never cached for this element
+            result.assert_main_error(ErrorDomain.APP, "missing-buildtree-artifact-created-without-buildtree")
